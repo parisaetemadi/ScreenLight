@@ -18,7 +18,13 @@ fi
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"
 
-swiftc -O -framework Cocoa -o "$app/Contents/MacOS/ScreenLight" "$here/main.swift"
+# No -O. This app sleeps between menu clicks, so optimisation buys nothing and
+# costs most of the build time. The first compile is slow regardless - swiftc
+# has to build the Cocoa module before it reaches our file - and it prints
+# nothing while it does, which looks exactly like a hang.
+echo "compiling (the first run takes a minute, and says nothing while it works)..."
+swiftc -framework Cocoa -o "$app/Contents/MacOS/ScreenLight" "$here/main.swift"
+echo "compiled."
 
 cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
