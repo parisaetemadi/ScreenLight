@@ -31,6 +31,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleName</key><string>ScreenLight</string>
     <key>CFBundleDisplayName</key><string>ScreenLight</string>
     <key>CFBundleIdentifier</key><string>com.screenlight.bar</string>
@@ -44,6 +45,19 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+plutil -lint "$app/Contents/Info.plist" >/dev/null || {
+    echo "build.sh: the Info.plist did not come out valid" >&2
+    exit 1
+}
+
+# LaunchServices refuses an unsigned bundle on Apple Silicon - `open` reports
+# -10825, "incompatible application version", which says nothing about the real
+# cause. An ad-hoc signature (the lone "-") is enough; it is not a developer
+# certificate and nothing is sent anywhere.
+codesign --force --deep --sign - "$app" 2>/dev/null || {
+    echo 'build.sh: could not ad-hoc sign the bundle; open may refuse it' >&2
+}
 
 echo "built $app"
 echo
