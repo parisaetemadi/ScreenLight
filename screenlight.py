@@ -657,8 +657,42 @@ def open_displays() -> Displays | None:
         return None
 
 
+def status_report(cfg: dict) -> dict:
+    """Everything the menu bar app needs, in one shot."""
+    kelvin, bright, source = target_now(cfg)
+    ov = load_override()
+    now = datetime.now(timezone.utc)
+
+    report = {
+        "kelvin": round(kelvin, 1),
+        "brightness": round(bright, 3),
+        "source": source,
+        "preset": nearest_preset(kelvin),
+        "located": located(cfg),
+        "daemon": daemon_pid(),
+        "day": cfg["day"],
+        "night": cfg["night"],
+        "hold_until": (ov or {}).get("until"),
+        "progress": 0.0,
+        "sunrise": None,
+        "sunset": None,
+        "elevation": None,
+    }
+    if located(cfg):
+        report["progress"] = round(scheduled(cfg, now)[2], 3)
+        report["elevation"] = round(solar_elevation(now, cfg["lat"], cfg["lon"]), 2)
+        times = sun_times(now, cfg["lat"], cfg["lon"])
+        if times:
+            report["sunrise"] = times[0].astimezone().isoformat(timespec="minutes")
+            report["sunset"] = times[1].astimezone().isoformat(timespec="minutes")
+    return report
+
+
 def cmd_status(args) -> int:
     cfg = load_config()
+    if getattr(args, "json", False):
+        print(json.dumps(status_report(cfg)))
+        return 0
     colour = _supports_colour(sys.stdout) and not args.plain
     now_local = datetime.now(timezone.utc).astimezone()
 
@@ -747,6 +781,20 @@ def _push(args, kelvin: float | None, bright: float | None) -> int:
     save_override(kelvin=kelvin, brightness=bright, minutes=args.hold)
     kelvin, bright, _ = target_now(load_config())
 
+    # Only one process may own a display's gamma: whichever set it last holds
+    # it, and macOS hands the table back when that process exits. So when the
+    # daemon is up it does the applying and this one just nudges it - applying
+    # here too would set the ramp and then drop it again on exit.
+    pid = daemon_pid()
+    if pid:
+        try:
+            os.kill(pid, signal.SIGUSR1)
+        except OSError as exc:
+            print(f"{NAME}: could not reach the daemon ({exc})", file=sys.stderr)
+            return 1
+        _announce(args, kelvin, bright)
+        return 0
+
     displays = open_displays()
     if displays is None:
         return 1
@@ -756,18 +804,21 @@ def _push(args, kelvin: float | None, bright: float | None) -> int:
         displays.apply(kelvin, bright)
     save_state(kelvin, bright)
 
+    _announce(args, kelvin, bright)
+    print(
+        f"{NAME}: no daemon running, so macOS will undo this when this "
+        f"process exits - run `{NAME} install` to make it stick",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _announce(args, kelvin: float, bright: float) -> None:
     name = nearest_preset(kelvin)
     label = f" ({name})" if name else ""
     note = f", for {round(args.hold)} min" if args.hold else ""
     dimmed = f", {round(bright * 100)}% brightness" if bright < 0.999 else ""
     print(f"{round(kelvin)}K{label}{dimmed}{note}")
-    if not daemon_pid():
-        print(
-            f"{NAME}: no daemon running, so macOS will undo this when this "
-            f"process exits - run `{NAME} install` to make it stick",
-            file=sys.stderr,
-        )
-    return 0
 
 
 def _brightness_from(args) -> float | None:
@@ -853,22 +904,42 @@ def cmd_run(args) -> int:
         fh.write(str(os.getpid()))
 
     stopping = False
+    nudged = False
 
     def stop(_signum, _frame):
         nonlocal stopping
         stopping = True
 
+    def nudge(_signum, _frame):
+        # SIGUSR1 means "the override file changed, look again now". Without it
+        # a menu click or a `set` would wait out the rest of the tick.
+        nonlocal nudged
+        nudged = True
+
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGUSR1, nudge)
 
     try:
         while not stopping:
             # Re-read config each tick so edits and `set` take effect without
             # a restart, and re-apply unconditionally: macOS drops the gamma
             # table on sleep, resolution changes and new monitors.
+            nudged = False
             cfg = load_config()
             kelvin, bright, source = target_now(cfg)
-            displays.apply(kelvin, bright)
+
+            # Schedule drift between ticks is imperceptible, so apply it
+            # directly; a jump means somebody just asked for something, and
+            # that gets eased in so the screen does not snap.
+            last = load_state()
+            jump = abs(float(last.get("kelvin", kelvin)) - kelvin) > 120 or abs(
+                float(last.get("brightness", bright)) - bright
+            ) > 0.02
+            if jump and last:
+                _fade_to(displays, kelvin, bright, 0.6)
+            else:
+                displays.apply(kelvin, bright)
             save_state(kelvin, bright)
 
             if source == "auto":
@@ -879,7 +950,7 @@ def cmd_run(args) -> int:
 
             interval = args.interval if not mid_transition else min(args.interval, 15)
             for _ in range(int(interval)):
-                if stopping:
+                if stopping or nudged:
                     break
                 time.sleep(1)
     finally:
@@ -1020,6 +1091,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = subs.add_parser("status", help="what the screen is doing and why")
     p.add_argument("--plain", action="store_true", help="no chart, no colour")
+    p.add_argument("--json", action="store_true",
+                   help="machine-readable, for the menu bar app")
     p.set_defaults(func=cmd_status)
 
     p = subs.add_parser("set", help="hold a temperature by hand")

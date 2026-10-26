@@ -42,6 +42,40 @@ cd screenlight
 `~/Library/LaunchAgents/com.screenlight.daemon.plist` and starts it. From then
 on the daemon holds the schedule and you only ever talk to it through the CLI.
 
+## The menu bar
+
+```sh
+menubar/build.sh          # needs only the Xcode Command Line Tools
+open menubar/ScreenLight.app
+```
+
+A half-lit disc sits in the status bar and **fills from the bottom as the
+evening comes on** — empty at 6500K, full at your night target, in five coarse
+steps. f.lux's icon never changes, so its menu bar tells you nothing; this one
+answers "is it warming yet?" without opening anything. The steps are coarse
+deliberately: a mark that redrew on every daemon tick would twitch in the
+corner of your eye, and the menu bar is meant to be ignorable.
+
+The menu holds three things and a quit:
+
+| | |
+| --- | --- |
+| **Follow the sun** | drop any hold and go back on schedule |
+| **Warm now** | jump straight to the night target |
+| **Off for an hour** | neutral, then back on schedule by itself |
+
+It is a template image, so macOS inverts it for the dark menu bar on its own,
+and it is drawn in code rather than shipped as a file — there is no asset to
+keep in step with it.
+
+**The app holds no logic of its own.** Only one process may own a display's
+gamma table, and the daemon owns it; the app reads `screenlight status --json`
+and asks for changes through the same CLI you would type. A second copy of the
+schedule living in the app is exactly the thing that would drift out of step
+with the first.
+
+To start it at login: System Settings → General → Login Items → **+**.
+
 ## Using it
 
 | | |
@@ -72,7 +106,9 @@ values because they are the ones people already know:
 | `daylight` | 6500K | neutral; the no-op |
 
 Every command that changes the picture fades to it over a second by default
-(`--fade 0` to snap, `--fade 10` to creep).
+(`--fade 0` to snap, `--fade 10` to creep). With the daemon running, the CLI
+writes the request and signals the daemon rather than touching the display
+itself — see the note on gamma ownership above — so the fade happens there.
 
 ### If warm alone is not helping
 
@@ -176,10 +212,14 @@ screenlight config --lat 43.65 --lon -79.38
 python3 -m unittest discover -s tests -v
 ```
 
-Fifty tests, no dependencies. They cover the parts with a right answer:
+Fifty-seven tests, no dependencies. They cover the parts with a right answer:
 the colour temperature curve, the preset names, the solar position maths, the
-schedule, the chart, and the config and override files. The solar tests are pinned against
+schedule, the chart, the config and override files, and the JSON contract the
+menu bar app decodes — that last one checked against the real `.swift` source,
+because a key that changes type there does not crash the app, it just quietly
+decodes nil and the menu bar goes wrong. The solar tests are pinned against
 published almanac times — London's midsummer sunrise comes out one minute off
 the almanac, and midwinter sunset one minute off, which is the accuracy the
 algorithm claims. The CoreGraphics calls are not covered; there is no way to
-assert from inside a test that a screen got warmer.
+assert from inside a test that a screen got warmer. Neither is the Swift
+itself — only the contract between it and the CLI.

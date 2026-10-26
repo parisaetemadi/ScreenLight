@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -383,6 +384,81 @@ class ConfigAndOverride(unittest.TestCase):
     def test_state_roundtrip(self):
         sl.save_state(3000, 0.7)
         self.assertEqual(sl.load_state(), {"kelvin": 3000, "brightness": 0.7})
+
+
+class MenuBarContract(unittest.TestCase):
+    """The Swift app decodes `status --json` into a struct.
+
+    A key that disappears or changes type does not crash the app - Swift just
+    decodes nil and the menu bar quietly goes wrong. So the contract is pinned
+    here, against the real .swift source rather than a copy of it.
+    """
+
+    SWIFT = os.path.join(ROOT, "menubar", "main.swift")
+
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self._saved = (sl.CONFIG_DIR, sl.CONFIG_PATH, sl.OVERRIDE_PATH, sl.STATE_PATH)
+        sl.CONFIG_DIR = self._dir.name
+        sl.CONFIG_PATH = os.path.join(self._dir.name, "config.json")
+        sl.OVERRIDE_PATH = os.path.join(self._dir.name, "override.json")
+        sl.STATE_PATH = os.path.join(self._dir.name, "state.json")
+        cfg = sl.load_config()
+        cfg["lat"], cfg["lon"] = 43.65, -79.38
+        sl.save_config(cfg)
+
+    def tearDown(self):
+        sl.CONFIG_DIR, sl.CONFIG_PATH, sl.OVERRIDE_PATH, sl.STATE_PATH = self._saved
+        self._dir.cleanup()
+
+    def swift_fields(self):
+        source = open(self.SWIFT).read()
+        block = source[source.index("struct Status: Decodable"):source.index("enum CLI")]
+        return re.findall(r"let (\w+): (\w+)(\??)", block)
+
+    def test_every_field_the_app_decodes_is_published(self):
+        report = sl.status_report(sl.load_config())
+        kinds = {"Double": (int, float), "Int": int, "String": str, "Bool": bool}
+        for name, swift_type, optional in self.swift_fields():
+            with self.subTest(field=name):
+                self.assertIn(name, report)
+                value = report[name]
+                if value is None:
+                    self.assertEqual(optional, "?", f"{name} was null but is not optional in Swift")
+                else:
+                    self.assertIsInstance(value, kinds[swift_type])
+
+    def test_the_struct_is_not_empty(self):
+        # Guards against the regex silently matching nothing and the test
+        # above passing for the wrong reason.
+        self.assertGreaterEqual(len(self.swift_fields()), 8)
+
+    def test_report_survives_every_mode(self):
+        cfg = sl.load_config()
+        for setup, expected in (
+            (lambda: sl.clear_override(), "auto"),
+            (lambda: sl.save_override(brightness=0.5), "dimmed"),
+            (lambda: sl.save_override(kelvin=2000), "manual"),
+        ):
+            setup()
+            with self.subTest(source=expected):
+                report = sl.status_report(sl.load_config())
+                self.assertEqual(report["source"], expected)
+                self.assertIsInstance(report["progress"], float)
+
+    def test_unlocated_still_reports(self):
+        sl.clear_override()
+        cfg = sl.load_config()
+        cfg["lat"] = cfg["lon"] = None
+        sl.save_config(cfg)
+        report = sl.status_report(sl.load_config())
+        self.assertEqual(report["source"], "unlocated")
+        self.assertFalse(report["located"])
+        self.assertIsNone(report["sunset"])
+
+    def test_json_round_trips(self):
+        text = json.dumps(sl.status_report(sl.load_config()))
+        self.assertEqual(json.loads(text)["day"], sl.DEFAULTS["day"])
 
 
 class Cli(unittest.TestCase):
