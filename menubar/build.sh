@@ -59,9 +59,35 @@ codesign --force --deep --sign - "$app" 2>/dev/null || {
     echo 'build.sh: could not ad-hoc sign the bundle; open may refuse it' >&2
 }
 
-echo "built $app"
+# Register it the same way the daemon registers itself. Started from a shell
+# the app dies with that shell, and `open` leaves nothing behind for the next
+# login - neither is what anyone means by "put an icon in my menu bar".
+label="com.screenlight.bar"
+plist="$HOME/Library/LaunchAgents/$label.plist"
+mkdir -p "$HOME/Library/LaunchAgents"
+
+cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$label</string>
+    <key>ProgramArguments</key>
+    <array><string>$app/Contents/MacOS/ScreenLight</string></array>
+    <key>RunAtLoad</key><true/>
+    <!-- Not KeepAlive: Quit in the menu has to actually quit it. It comes
+         back at the next login, which is the behaviour people expect. -->
+</dict>
+</plist>
+PLIST
+
+target="gui/$(id -u)"
+launchctl bootout "$target/$label" 2>/dev/null || true
+launchctl bootstrap "$target" "$plist" 2>/dev/null \
+    || launchctl load -w "$plist" 2>/dev/null \
+    || echo "build.sh: launchctl would not take the agent; open $app by hand" >&2
+
+echo "built    $app"
+echo "running  - it is in your menu bar now, and comes back at every login"
 echo
-echo "  open $app          # run it now"
-echo "  cp -r $app /Applications/"
-echo
-echo "To start it at login: System Settings -> General -> Login Items -> +"
+echo "To stop it coming back:  screenlight uninstall"

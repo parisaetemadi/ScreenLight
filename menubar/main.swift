@@ -70,18 +70,26 @@ enum CLI {
 func discIcon(fill: Double) -> NSImage {
     let side: CGFloat = 18
     let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
-        let disc = NSBezierPath(ovalIn: rect.insetBy(dx: 1.75, dy: 1.75))
+        let ring = rect.insetBy(dx: 1.75, dy: 1.75)
+
+        // The fill sits in a smaller circle inside the ring, not against it.
+        // Filling the ring itself meant that at full warmth - which is every
+        // evening, the state you see most - the mark became a solid black
+        // blob, indistinguishable from a dot and from a rendering fault. The
+        // gap keeps it reading as a ring with a core however full it gets.
+        let well = ring.insetBy(dx: 2.3, dy: 2.3)
         if fill > 0.001 {
             NSGraphicsContext.saveGraphicsState()
-            disc.addClip()
-            let inner = rect.insetBy(dx: 1.75, dy: 1.75)
+            NSBezierPath(ovalIn: well).addClip()
             NSColor.black.setFill()
             NSBezierPath(rect: NSRect(x: rect.minX,
-                                      y: inner.minY,
+                                      y: well.minY,
                                       width: rect.width,
-                                      height: inner.height * CGFloat(fill))).fill()
+                                      height: well.height * CGFloat(fill))).fill()
             NSGraphicsContext.restoreGraphicsState()
         }
+
+        let disc = NSBezierPath(ovalIn: ring)
         disc.lineWidth = 1.6
         NSColor.black.setStroke()
         disc.stroke()
@@ -104,7 +112,7 @@ final class ScreenLightApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var item: NSStatusItem!
     private let menu = NSMenu()
     private let header = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let follow = NSMenuItem(title: "Follow the sun", action: #selector(tapFollow), keyEquivalent: "")
+    private let follow = NSMenuItem(title: "Automatic", action: #selector(tapFollow), keyEquivalent: "")
     private let warm = NSMenuItem(title: "Warm now", action: #selector(tapWarm), keyEquivalent: "")
     private let off = NSMenuItem(title: "Off for an hour", action: #selector(tapOff), keyEquivalent: "")
     private var timer: Timer?

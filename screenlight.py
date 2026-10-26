@@ -65,9 +65,9 @@ PRESETS = {
 
 DEFAULTS = {
     "day": 6500,
-    "night": 2700,
+    "night": 3400,
     "day_brightness": 1.0,
-    "night_brightness": 0.85,
+    "night_brightness": 0.8,
     "lat": None,
     "lon": None,
     # Solar elevation in degrees that bounds the transition. Above `high` it is
@@ -1072,12 +1072,20 @@ def cmd_install(args) -> int:
     return 0
 
 
+BAR_LABEL = "com.screenlight.bar"
+BAR_PLIST_PATH = os.path.expanduser(f"~/Library/LaunchAgents/{BAR_LABEL}.plist")
+
+
 def cmd_uninstall(args) -> int:
-    subprocess.run(
-        ["launchctl", "bootout", f"gui/{os.getuid()}/{LABEL}"], capture_output=True
-    )
-    subprocess.run(["launchctl", "unload", PLIST_PATH], capture_output=True)
-    for path in (PLIST_PATH, os.path.expanduser(f"~/.local/bin/{NAME}")):
+    # Both agents: the daemon, and the menu bar app that menubar/build.sh
+    # registers. Leaving the second behind would put the icon back at the next
+    # login with nothing underneath it.
+    for label, plist in ((LABEL, PLIST_PATH), (BAR_LABEL, BAR_PLIST_PATH)):
+        subprocess.run(
+            ["launchctl", "bootout", f"gui/{os.getuid()}/{label}"], capture_output=True
+        )
+        subprocess.run(["launchctl", "unload", plist], capture_output=True)
+    for path in (PLIST_PATH, BAR_PLIST_PATH, os.path.expanduser(f"~/.local/bin/{NAME}")):
         try:
             os.remove(path)
             print(f"removed - {path}")

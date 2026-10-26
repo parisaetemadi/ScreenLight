@@ -47,10 +47,14 @@ on the daemon holds the schedule and you only ever talk to it through the CLI.
 
 ```sh
 menubar/build.sh          # needs only the Xcode Command Line Tools
-open menubar/ScreenLight.app
 ```
 
-A half-lit disc sits in the status bar and **fills from the bottom as the
+That builds the app, ad-hoc signs it (LaunchServices refuses an unsigned
+bundle on Apple Silicon, reporting `-10825`, which names nothing to do with
+the cause) and registers it as a login agent, so it appears straight away and
+comes back at every login. `screenlight uninstall` removes both agents.
+
+A ringed disc sits in the status bar and **fills from the bottom as the
 evening comes on** — empty at 6500K, full at your night target, in five coarse
 steps. f.lux's icon never changes, so its menu bar tells you nothing; this one
 answers "is it warming yet?" without opening anything. The steps are coarse
@@ -61,9 +65,15 @@ The menu holds three things and a quit:
 
 | | |
 | --- | --- |
-| **Follow the sun** | drop any hold and go back on schedule |
+| **Automatic** | drop any hold and go back to following the sun |
 | **Warm now** | jump straight to the night target |
 | **Off for an hour** | neutral, then back on schedule by itself |
+
+The fill sits in a smaller circle *inside* the ring rather than against it.
+Filling the ring itself made the mark a solid black blob at full warmth —
+which is every evening, the state you see most — indistinguishable from a dot
+or from a rendering fault. The gap keeps it reading as a ring with a core
+however full it gets.
 
 It is a template image, so macOS inverts it for the dark menu bar on its own,
 and it is drawn in code rather than shipped as a file — there is no asset to
@@ -74,8 +84,6 @@ gamma table, and the daemon owns it; the app reads `screenlight status --json`
 and asks for changes through the same CLI you would type. A second copy of the
 schedule living in the app is exactly the thing that would drift out of step
 with the first.
-
-To start it at login: System Settings → General → Login Items → **+**.
 
 ## Using it
 
@@ -133,9 +141,9 @@ Settings live in `~/.config/screenlight/config.json`:
 | key | default | |
 | --- | --- | --- |
 | `day` | `6500` | daytime temperature in kelvin |
-| `night` | `2700` | night temperature, "tungsten" — Night Shift's warm end |
+| `night` | `3400` | night temperature, "halogen" |
 | `day_brightness` | `1.0` | a multiplier on the whole ramp, 0.15–1.0 |
-| `night_brightness` | `0.85` | below 1 dims as well as warms |
+| `night_brightness` | `0.8` | below 1 dims as well as warms |
 | `lat` / `lon` | unset | decimal degrees |
 | `elevation_high` | `5.0` | sun this far up means full daylight |
 | `elevation_low` | `-10.0` | sun this far down means full night |
