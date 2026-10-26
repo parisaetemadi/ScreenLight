@@ -19,6 +19,18 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 
+# Python 3.9 is what the oldest supported macOS ships. Nothing here needs more,
+# and one rule keeps it that way: never put a backslash inside an f-string's
+# {expression} - that was a SyntaxError until 3.12, and it is a parse error, so
+# it takes down the whole file before any version check could report it. There
+# is a test that enforces this.
+MIN_PYTHON = (3, 9)
+if sys.version_info < MIN_PYTHON:
+    raise SystemExit(
+        "screenlight needs Python %d.%d or newer; this is %d.%d"
+        % (MIN_PYTHON + sys.version_info[:2])
+    )
+
 NAME = "screenlight"
 LABEL = "com.screenlight.daemon"
 
@@ -596,7 +608,8 @@ def day_curve(cfg: dict, now_local: datetime, colour: bool) -> list[str]:
             _tint(chr(0x2800 + cell), temps[min(c * 2, dots - 1)], colour)
             for c, cell in enumerate(cells)
         )
-        out.append(f"  {label}{_dim(' \u2524', colour)}{painted}")
+        axis_tick = _dim(" \u2524", colour)
+        out.append(f"  {label}{axis_tick}{painted}")
 
     # x axis: a tick every three hours, labelled every six.
     axis = ["\u2500"] * CHART_COLS

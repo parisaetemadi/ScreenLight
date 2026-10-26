@@ -4,9 +4,10 @@ A small f.lux for macOS: your screen cools to daylight white in the morning and
 warms toward tungsten as the sun goes down, on a curve that follows the actual
 sun where you are rather than a clock.
 
-One Python file, standard library only. The display work is done by calling
-CoreGraphics through `ctypes`, so there is nothing to install and nothing to
-build — macOS already ships a `python3` that can run it.
+One Python file, standard library only, **Python 3.9 or newer**. The display
+work is done by calling CoreGraphics through `ctypes`, so there is nothing to
+install and nothing to build — macOS already ships a `python3` that can run it,
+and so does any conda or Homebrew Python you already have.
 
 ```
    6500K ┤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
@@ -212,7 +213,7 @@ screenlight config --lat 43.65 --lon -79.38
 python3 -m unittest discover -s tests -v
 ```
 
-Fifty-seven tests, no dependencies. They cover the parts with a right answer:
+Sixty tests, no dependencies, run against Python 3.11 and 3.13. They cover the parts with a right answer:
 the colour temperature curve, the preset names, the solar position maths, the
 schedule, the chart, the config and override files, and the JSON contract the
 menu bar app decodes — that last one checked against the real `.swift` source,
@@ -220,6 +221,14 @@ because a key that changes type there does not crash the app, it just quietly
 decodes nil and the menu bar goes wrong. The solar tests are pinned against
 published almanac times — London's midsummer sunrise comes out one minute off
 the almanac, and midwinter sunset one minute off, which is the accuracy the
-algorithm claims. The CoreGraphics calls are not covered; there is no way to
+algorithm claims. One test exists because of a bug that reached a real Mac: a backslash inside an
+f-string expression parses fine from Python 3.12 on and is a `SyntaxError`
+before it, so code written on a 3.13 machine failed to load on a 3.11 one. A
+parse error cannot be caught at runtime — the whole file fails before any
+version check could report it — so the test scans the module for that pattern
+instead, and a second test re-introduces the original line to prove the scanner
+still detects it.
+
+The CoreGraphics calls are not covered; there is no way to
 assert from inside a test that a screen got warmer. Neither is the Swift
 itself — only the contract between it and the CLI.

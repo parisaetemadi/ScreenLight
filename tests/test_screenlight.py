@@ -386,6 +386,57 @@ class ConfigAndOverride(unittest.TestCase):
         self.assertEqual(sl.load_state(), {"kelvin": 3000, "brightness": 0.7})
 
 
+class RunsOnOlderPython(unittest.TestCase):
+    """Guards against syntax that only a recent interpreter accepts.
+
+    This is here because of a real failure: a backslash inside an f-string
+    expression parses fine from 3.12 on and is a SyntaxError before it. It
+    shipped because the machine it was written on had 3.13 and the Mac that
+    ran it had conda's older build. A parse error cannot be caught at runtime
+    - the whole file fails to load - so it has to be caught here.
+    """
+
+    # Only the shipped module. This file is parsed by whatever interpreter
+    # runs the tests, so a bad f-string here fails loudly by itself; the module
+    # is the one that parses on someone else's Python, which may be older than
+    # the one these tests run on. It also holds a deliberate offender below.
+    SOURCES = (os.path.join(ROOT, "screenlight.py"),)
+
+    # An f-string literal, then the {...} groups inside it. Good enough for
+    # this codebase: single-line, no nested braces in an expression.
+    FSTRING = re.compile(r"""(?:\b|^)[fF][rR]?(['"])(?:\\.|(?!\1).)*\1""")
+    HOLE = re.compile(r"\{([^{}]*)\}")
+
+    def test_no_backslash_inside_an_fstring_expression(self):
+        for path in self.SOURCES:
+            with open(path) as handle:
+                for number, line in enumerate(handle, 1):
+                    for literal in self.FSTRING.finditer(line):
+                        for hole in self.HOLE.finditer(literal.group(0)):
+                            self.assertNotIn(
+                                "\\", hole.group(1),
+                                f"{os.path.basename(path)}:{number} puts a "
+                                f"backslash in an f-string expression, which "
+                                f"is a SyntaxError before Python 3.12",
+                            )
+
+    def test_the_scanner_catches_a_known_offender(self):
+        # Without this, a regex that matched nothing would pass the test above
+        # forever and the guard would be decorative.
+        line = 'out.append(f"  {label}{_dim(chr(92) + \'u2524\', colour)}")'
+        line = line.replace("chr(92) + ", "\\")
+        found = [
+            hole.group(1)
+            for literal in self.FSTRING.finditer(line)
+            for hole in self.HOLE.finditer(literal.group(0))
+            if "\\" in hole.group(1)
+        ]
+        self.assertTrue(found, "the scanner no longer detects the original bug")
+
+    def test_minimum_version_is_declared(self):
+        self.assertLessEqual(sl.MIN_PYTHON, (3, 9))
+
+
 class MenuBarContract(unittest.TestCase):
     """The Swift app decodes `status --json` into a struct.
 
