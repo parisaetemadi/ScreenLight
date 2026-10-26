@@ -4,7 +4,9 @@ The CoreGraphics calls aren't covered - there is no way to assert a screen got
 warmer from inside a test. Everything that decides *what* to send it is here.
 """
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -144,6 +146,50 @@ class Schedule(unittest.TestCase):
         self.assertAlmostEqual(night_b, 0.6)
 
 
+class Presets(unittest.TestCase):
+    def test_names_resolve(self):
+        self.assertEqual(sl.parse_temperature("ember"), 1200.0)
+        self.assertEqual(sl.parse_temperature("Tungsten"), 2700.0)
+        self.assertEqual(sl.parse_temperature("  CANDLE "), 1900.0)
+
+    def test_numbers_resolve(self):
+        self.assertEqual(sl.parse_temperature("3400"), 3400.0)
+        self.assertEqual(sl.parse_temperature("2700K"), 2700.0)
+        self.assertEqual(sl.parse_temperature("2700k"), 2700.0)
+        self.assertEqual(sl.parse_temperature(5000), 5000.0)
+
+    def test_nonsense_is_rejected_with_the_options(self):
+        with self.assertRaises(ValueError) as caught:
+            sl.parse_temperature("warmish")
+        self.assertIn("ember", str(caught.exception))
+
+    def test_every_preset_is_in_range(self):
+        for name, kelvin in sl.PRESETS.items():
+            with self.subTest(name=name):
+                self.assertGreaterEqual(kelvin, sl.MIN_K)
+                self.assertLessEqual(kelvin, sl.MAX_K)
+
+    def test_presets_reach_warmer_than_night_shift(self):
+        # The whole point of this over Night Shift, whose warm end is about
+        # 2700K: there has to be somewhere further to go.
+        self.assertLess(min(sl.PRESETS.values()), 2000)
+
+    def test_nearest_preset_names_exact_hits(self):
+        self.assertEqual(sl.nearest_preset(2700), "tungsten")
+        self.assertEqual(sl.nearest_preset(6500), "daylight")
+        self.assertEqual(sl.nearest_preset(1250), "ember")
+
+    def test_nearest_preset_declines_to_name_a_tweener(self):
+        # 4431K is halfway through the evening ramp, not "fluorescent".
+        self.assertIsNone(sl.nearest_preset(4431))
+        self.assertIsNone(sl.nearest_preset(5200))
+
+    def test_every_preset_names_itself(self):
+        for name, kelvin in sl.PRESETS.items():
+            with self.subTest(name=name):
+                self.assertEqual(sl.nearest_preset(kelvin), name)
+
+
 class BrailleCanvas(unittest.TestCase):
     def test_blank_canvas_is_blank(self):
         canvas = sl.Braille(3, 1)
@@ -182,7 +228,7 @@ class Chart(unittest.TestCase):
         lines = sl.day_curve(cfg, now, colour=False)
         self.assertEqual(len(lines), sl.CHART_ROWS + 3)
         self.assertIn("6500K", lines[0])
-        self.assertIn("3400K", lines[sl.CHART_ROWS - 1])
+        self.assertIn(f"{round(sl.DEFAULTS['night'])}K", lines[sl.CHART_ROWS - 1])
         self.assertIn("12p", "".join(lines))
         self.assertIn("\u25b2", lines[-1])
 
@@ -255,7 +301,8 @@ class ConfigAndOverride(unittest.TestCase):
     def test_corrupt_config_falls_back_to_defaults(self):
         with open(sl.CONFIG_PATH, "w") as fh:
             fh.write("{not json")
-        self.assertEqual(sl.load_config()["day"], sl.DEFAULTS["day"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(sl.load_config()["day"], sl.DEFAULTS["day"])
 
     def test_override_beats_the_schedule(self):
         cfg = sl.load_config()
@@ -284,6 +331,55 @@ class ConfigAndOverride(unittest.TestCase):
         self.assertEqual(source, "unlocated")
         self.assertEqual(kelvin, float(sl.DEFAULTS["day"]))
 
+    def test_dimming_alone_leaves_the_colour_on_the_schedule(self):
+        cfg = sl.load_config()
+        cfg["lat"], cfg["lon"] = 51.4778, -0.0015
+        sl.save_config(cfg)
+        noon = datetime(2026, 6, 21, 12, tzinfo=UTC)
+        scheduled_k = sl.scheduled(cfg, noon)[0]
+
+        sl.save_override(brightness=0.4)
+        kelvin, bright, source = sl.target_now(cfg, noon)
+        self.assertEqual(kelvin, scheduled_k)
+        self.assertEqual(bright, 0.4)
+        self.assertEqual(source, "dimmed")
+
+    def test_a_hold_and_a_dim_compose(self):
+        cfg = sl.load_config()
+        cfg["lat"], cfg["lon"] = 51.4778, -0.0015
+        sl.save_config(cfg)
+        sl.save_override(brightness=0.5)
+        sl.save_override(kelvin=1200)
+        kelvin, bright, source = sl.target_now(cfg)
+        self.assertEqual((kelvin, bright, source), (1200.0, 0.5, "manual"))
+
+    def test_brightness_is_floored(self):
+        # Nothing may leave the screen too dark to read the undo command on.
+        sl.save_override(brightness=0.01)
+        self.assertEqual(sl.target_now(sl.load_config())[1], sl.MIN_BRIGHTNESS)
+
+    def test_neutral_and_undimmed_is_reachable(self):
+        sl.save_override(kelvin=1200, brightness=0.3)
+        sl.save_override(kelvin=float(sl.NEUTRAL_K), brightness=1.0)
+        kelvin, bright, _ = sl.target_now(sl.load_config())
+        self.assertEqual((kelvin, bright), (float(sl.NEUTRAL_K), 1.0))
+        self.assertEqual(sl.whitepoint(kelvin), (1.0, 1.0, 1.0))
+
+    def test_config_takes_preset_names(self):
+        parser = sl.build_parser()
+        args = parser.parse_args(["config", "--night", "candle"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(sl.cmd_config(args), 0)
+        self.assertEqual(sl.load_config()["night"], 1900.0)
+
+    def test_config_rejects_nonsense_without_writing(self):
+        parser = sl.build_parser()
+        before = sl.load_config()["night"]
+        args = parser.parse_args(["config", "--night", "warmish"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(sl.cmd_config(args), 1)
+        self.assertEqual(sl.load_config()["night"], before)
+
     def test_state_roundtrip(self):
         sl.save_state(3000, 0.7)
         self.assertEqual(sl.load_state(), {"kelvin": 3000, "brightness": 0.7})
@@ -294,8 +390,10 @@ class Cli(unittest.TestCase):
         parser = sl.build_parser()
         for argv in (
             ["status"], ["status", "--plain"],
-            ["set", "3000"], ["set", "3000", "--for", "60", "--brightness", "0.8"],
-            ["off"], ["auto"],
+            ["set", "3000"], ["set", "ember"], ["set", "2700K"],
+            ["set", "3000", "--for", "60", "--dim", "50"],
+            ["dim", "40"], ["dim", "40", "--for", "30"],
+            ["off"], ["off", "--for", "20"], ["auto"],
             ["run", "--once"], ["run", "--interval", "30"],
             ["config"], ["config", "--night", "2700"], ["config", "--locate"],
             ["install"], ["uninstall"],
@@ -305,7 +403,10 @@ class Cli(unittest.TestCase):
                 self.assertTrue(callable(args.func))
 
     def test_bare_invocation_prints_help(self):
-        self.assertEqual(sl.main([]), 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(sl.main([]), 0)
+        self.assertIn("usage:", out.getvalue())
 
 
 if __name__ == "__main__":

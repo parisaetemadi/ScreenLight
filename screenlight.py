@@ -33,11 +33,29 @@ PLIST_PATH = os.path.expanduser(f"~/Library/LaunchAgents/{LABEL}.plist")
 NEUTRAL_K = 6500
 MIN_K, MAX_K = 1000, 10000
 
+# A gamma ramp can take the screen darker than the backlight slider will, which
+# is the point, but it can also take it past readable - and the command to undo
+# that is one you have to be able to see to type. 15% is dim enough to be
+# useful in a dark room and bright enough to still read.
+MIN_BRIGHTNESS = 0.15
+
+# Named temperatures, so nobody has to remember what 2300K looks like. The
+# names and values are f.lux's, because they are the ones people already know.
+PRESETS = {
+    "ember": 1200,
+    "candle": 1900,
+    "incandescent": 2300,
+    "tungsten": 2700,
+    "halogen": 3400,
+    "fluorescent": 4200,
+    "daylight": 6500,
+}
+
 DEFAULTS = {
     "day": 6500,
-    "night": 3400,
+    "night": 2700,
     "day_brightness": 1.0,
-    "night_brightness": 1.0,
+    "night_brightness": 0.85,
     "lat": None,
     "lon": None,
     # Solar elevation in degrees that bounds the transition. Above `high` it is
@@ -102,6 +120,33 @@ def whitepoint(kelvin: float) -> tuple[float, float, float]:
     if peak > 1.0:  # cooler than neutral: scale down rather than clip
         r, g, b = r / peak, g / peak, b / peak
     return r, g, b
+
+
+def parse_temperature(value) -> float:
+    """Accept a preset name, a bare number, or something like "2700K"."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    key = str(value).strip().lower()
+    if key in PRESETS:
+        return float(PRESETS[key])
+    try:
+        return float(key[:-1] if key.endswith("k") else key)
+    except ValueError:
+        raise ValueError(
+            f"don't know the temperature {value!r} - give kelvin "
+            f"({MIN_K}-{MAX_K}), or one of: " + ", ".join(PRESETS)
+        ) from None
+
+
+def nearest_preset(kelvin: float, tolerance: float = 120.0) -> str | None:
+    """The preset this temperature *is*, or None if it is between two.
+
+    Naming anything by its closest preset would label 4400K "fluorescent",
+    which is halfway through the evening ramp and not fluorescent at all. A
+    name is only useful when it is nearly exact.
+    """
+    name = min(PRESETS, key=lambda key: abs(PRESETS[key] - kelvin))
+    return name if abs(PRESETS[name] - kelvin) <= tolerance else None
 
 
 def rgb8(kelvin: float) -> tuple[int, int, int]:
@@ -370,9 +415,23 @@ def load_override() -> dict | None:
     return ov
 
 
-def save_override(kelvin: float, brightness: float, minutes: float | None) -> None:
+def save_override(
+    kelvin: float | None = None,
+    brightness: float | None = None,
+    minutes: float | None = None,
+) -> None:
+    """Hold temperature, brightness, or just one of the two.
+
+    Holding them separately is what lets `dim` dim without also freezing the
+    temperature: the schedule keeps moving the colour while the brightness
+    stays where it was put.
+    """
     os.makedirs(CONFIG_DIR, exist_ok=True)
-    ov = {"kelvin": kelvin, "brightness": brightness}
+    ov = dict(load_override() or {})
+    if kelvin is not None:
+        ov["kelvin"] = kelvin
+    if brightness is not None:
+        ov["brightness"] = brightness
     if minutes:
         ov["until"] = time.time() + minutes * 60.0
     tmp = OVERRIDE_PATH + ".tmp"
@@ -391,13 +450,22 @@ def clear_override() -> None:
 
 def target_now(cfg: dict, dt_utc: datetime | None = None):
     """What the screen should be right now: (kelvin, brightness, source)."""
+    if located(cfg):
+        kelvin, bright, _ = scheduled(cfg, dt_utc or datetime.now(timezone.utc))
+        source = "auto"
+    else:
+        kelvin, bright = float(cfg["day"]), float(cfg["day_brightness"])
+        source = "unlocated"
+
     ov = load_override()
     if ov:
-        return float(ov["kelvin"]), float(ov.get("brightness", 1.0)), "manual"
-    if not located(cfg):
-        return float(cfg["day"]), float(cfg["day_brightness"]), "unlocated"
-    kelvin, bright, _ = scheduled(cfg, dt_utc or datetime.now(timezone.utc))
-    return kelvin, bright, "auto"
+        if "kelvin" in ov:
+            kelvin, source = float(ov["kelvin"]), "manual"
+        if "brightness" in ov:
+            bright = float(ov["brightness"])
+            if source != "manual":
+                source = "dimmed"
+    return kelvin, max(MIN_BRIGHTNESS, min(1.0, bright)), source
 
 
 def located(cfg: dict) -> bool:
@@ -598,28 +666,32 @@ def cmd_status(args) -> int:
     ov = load_override()
 
     lines = []
-    if located(cfg) and not args.plain and not ov:
+    if located(cfg) and not args.plain and source != "manual":
         lines += day_curve(cfg, now_local, colour)
         lines.append("")
 
     def row(key: str, value: str) -> str:
         return f"  {_dim(key.ljust(9), colour)}{value}"
 
-    temp = _tint(f"{round(kelvin)}K", kelvin, colour)
-    if source == "auto":
+    def how_long() -> str:
+        if ov and ov.get("until"):
+            left = max(0.0, (ov["until"] - time.time()) / 60.0)
+            return f"for another {round(left)} min"
+        return "until further notice"
+
+    name = nearest_preset(kelvin)
+    temp = _tint(f"{round(kelvin)}K", kelvin, colour) + (f" {name}" if name else "")
+    if source == "manual":
+        lines.append(row("now", f"{temp}  held by hand, {how_long()}"))
+    elif source == "unlocated":
+        lines.append(row("now", f"{temp}  no location set"))
+    else:
         _, _, night = scheduled(cfg, datetime.now(timezone.utc))
         lines.append(row("now", f"{temp}  {round(night * 100)}% toward night"))
-    elif source == "manual":
-        held = "until further notice"
-        if ov and ov.get("until"):
-            left = max(0, (ov["until"] - time.time()) / 60.0)
-            held = f"for another {round(left)} min"
-        lines.append(row("now", f"{temp}  held manually, {held}"))
-    else:
-        lines.append(row("now", f"{temp}  no location set"))
 
     if bright < 0.999:
-        lines.append(row("dimming", f"{round(bright * 100)}% brightness"))
+        held = f", held {how_long()}" if source == "dimmed" else ""
+        lines.append(row("dimming", f"{round(bright * 100)}% brightness{held}"))
 
     if located(cfg):
         times = sun_times(now_local.astimezone(timezone.utc), cfg["lat"], cfg["lon"])
@@ -635,9 +707,16 @@ def cmd_status(args) -> int:
         lines.append(row("where", f"unset - run `{NAME} config --locate`"))
 
     pid = daemon_pid()
-    mode = "manual hold" if source == "manual" else "following the sun"
+    mode = {
+        "manual": "held by hand",
+        "dimmed": "following the sun, dimmed by hand",
+    }.get(source, "following the sun")
     lines.append(row("mode", f"{mode} - daemon " + (f"running (pid {pid})" if pid else "not running")))
-    lines.append(row("range", f"{round(cfg['day'])}K by day, {round(cfg['night'])}K by night"))
+    def named(kelvin: float) -> str:
+        name = nearest_preset(kelvin)
+        return f"{round(kelvin)}K {name}" if name else f"{round(kelvin)}K"
+
+    lines.append(row("range", f"{named(cfg['day'])}  ->  {named(cfg['night'])}"))
 
     names = display_names() if sys.platform == "darwin" else []
     if names:
@@ -663,13 +742,11 @@ def _fade_to(displays: Displays, kelvin: float, bright: float, seconds: float) -
             time.sleep(seconds / steps)
 
 
-def cmd_set(args) -> int:
-    kelvin = max(MIN_K, min(MAX_K, float(args.kelvin)))
-    if kelvin != float(args.kelvin):
-        print(f"{NAME}: clamped to {round(kelvin)}K ({MIN_K}-{MAX_K} supported)", file=sys.stderr)
-    bright = max(0.1, min(1.0, args.brightness))
+def _push(args, kelvin: float | None, bright: float | None) -> int:
+    """Record a hold, then move the screen to whatever that works out to."""
+    save_override(kelvin=kelvin, brightness=bright, minutes=args.hold)
+    kelvin, bright, _ = target_now(load_config())
 
-    save_override(kelvin, bright, args.hold)
     displays = open_displays()
     if displays is None:
         return 1
@@ -679,8 +756,11 @@ def cmd_set(args) -> int:
         displays.apply(kelvin, bright)
     save_state(kelvin, bright)
 
-    note = f" for {round(args.hold)} min" if args.hold else ""
-    print(f"{round(kelvin)}K{note}")
+    name = nearest_preset(kelvin)
+    label = f" ({name})" if name else ""
+    note = f", for {round(args.hold)} min" if args.hold else ""
+    dimmed = f", {round(bright * 100)}% brightness" if bright < 0.999 else ""
+    print(f"{round(kelvin)}K{label}{dimmed}{note}")
     if not daemon_pid():
         print(
             f"{NAME}: no daemon running, so macOS will undo this when this "
@@ -690,10 +770,49 @@ def cmd_set(args) -> int:
     return 0
 
 
+def _brightness_from(args) -> float | None:
+    pct = getattr(args, "dim", None)
+    if pct is None:
+        return None
+    return max(MIN_BRIGHTNESS, min(1.0, pct / 100.0))
+
+
+def cmd_set(args) -> int:
+    try:
+        wanted = parse_temperature(args.kelvin)
+    except ValueError as exc:
+        print(f"{NAME}: {exc}", file=sys.stderr)
+        return 1
+    kelvin = max(MIN_K, min(MAX_K, wanted))
+    if kelvin != wanted:
+        print(
+            f"{NAME}: clamped to {round(kelvin)}K ({MIN_K}-{MAX_K} supported)",
+            file=sys.stderr,
+        )
+    return _push(args, kelvin, _brightness_from(args))
+
+
+def cmd_dim(args) -> int:
+    """Scale the whole ramp down, which goes below the backlight's own floor.
+
+    This is deliberately separate from `set`: it holds the brightness without
+    freezing the colour, so the schedule carries on warming the screen while
+    the dimming stays put.
+    """
+    bright = max(MIN_BRIGHTNESS, min(1.0, args.percent / 100.0))
+    if args.percent / 100.0 < MIN_BRIGHTNESS:
+        print(
+            f"{NAME}: floored at {round(MIN_BRIGHTNESS * 100)}% - any darker and "
+            f"you could not read the command to undo it",
+            file=sys.stderr,
+        )
+    return _push(args, None, bright)
+
+
 def cmd_off(args) -> int:
-    args.kelvin = NEUTRAL_K
-    args.brightness = 1.0
-    return cmd_set(args)
+    # Neutral *and* undimmed: "off" has to mean the screen is untouched, or
+    # there is no way back to a known-good picture.
+    return _push(args, float(NEUTRAL_K), 1.0)
 
 
 def cmd_auto(args) -> int:
@@ -796,7 +915,15 @@ def cmd_config(args) -> int:
         cfg["lat"], cfg["lon"] = found
         print(f"  {cfg['lat']:.2f}, {cfg['lon']:.2f}")
 
-    for key in ("day", "night", "lat", "lon", "day_brightness", "night_brightness"):
+    for key in ("day", "night"):
+        value = getattr(args, key)
+        if value is not None:
+            try:
+                cfg[key] = parse_temperature(value)
+            except ValueError as exc:
+                print(f"{NAME}: {exc}", file=sys.stderr)
+                return 1
+    for key in ("lat", "lon", "day_brightness", "night_brightness"):
         value = getattr(args, key)
         if value is not None:
             cfg[key] = value
@@ -896,14 +1023,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_status)
 
     p = subs.add_parser("set", help="hold a temperature by hand")
-    p.add_argument("kelvin", type=float, help=f"{MIN_K}-{MAX_K}; {NEUTRAL_K} is neutral")
-    p.add_argument("--brightness", type=float, default=1.0, metavar="F", help="0.1-1.0")
+    p.add_argument(
+        "kelvin", metavar="TEMPERATURE",
+        help=f"kelvin ({MIN_K}-{MAX_K}), or a name: " + ", ".join(PRESETS),
+    )
+    p.add_argument("--dim", type=float, default=None, metavar="PCT",
+                   help=f"also scale brightness to this percent "
+                        f"({round(MIN_BRIGHTNESS * 100)}-100)")
     p.add_argument("--fade", type=float, default=1.0, metavar="SEC")
     p.add_argument("--for", dest="hold", type=float, default=None, metavar="MIN",
                    help="go back to following the sun after this long")
     p.set_defaults(func=cmd_set)
 
-    p = subs.add_parser("off", help="back to neutral, keeping the hold")
+    p = subs.add_parser(
+        "dim", help="scale brightness below what the backlight slider allows"
+    )
+    p.add_argument("percent", type=float, metavar="PCT",
+                   help=f"{round(MIN_BRIGHTNESS * 100)}-100; the colour keeps "
+                        f"following the sun")
+    p.add_argument("--fade", type=float, default=1.0, metavar="SEC")
+    p.add_argument("--for", dest="hold", type=float, default=None, metavar="MIN")
+    p.set_defaults(func=cmd_dim)
+
+    p = subs.add_parser("off", help="neutral and undimmed")
     p.add_argument("--fade", type=float, default=1.0, metavar="SEC")
     p.add_argument("--for", dest="hold", type=float, default=None, metavar="MIN")
     p.set_defaults(func=cmd_off)
@@ -918,8 +1060,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_run)
 
     p = subs.add_parser("config", help="read or change the settings")
-    p.add_argument("--day", type=float, metavar="K")
-    p.add_argument("--night", type=float, metavar="K")
+    p.add_argument("--day", metavar="TEMPERATURE",
+                   help="kelvin or a preset name")
+    p.add_argument("--night", metavar="TEMPERATURE",
+                   help="kelvin or a preset name")
     p.add_argument("--lat", type=float)
     p.add_argument("--lon", type=float)
     p.add_argument("--day-brightness", dest="day_brightness", type=float, metavar="F")
