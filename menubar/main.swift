@@ -117,6 +117,10 @@ final class ScreenLightApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         header.isEnabled = false
         for entry in [follow, warm, off] { entry.target = self }
 
+        // AppKit enables and disables menu items for you by asking whether the
+        // target responds to the action, which would override the disabling
+        // done below when the CLI is missing. Take the wheel.
+        menu.autoenablesItems = false
         menu.delegate = self
         menu.addItem(header)
         menu.addItem(.separator())
@@ -141,17 +145,30 @@ final class ScreenLightApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
+    /// Asks the CLI for the current state off the main thread.
+    ///
+    /// Reading it means starting a Python process, which is tens of
+    /// milliseconds at best. On the main thread that is a visible stall every
+    /// time the menu opens, so the work happens elsewhere and the menu redraws
+    /// when the answer arrives.
     private func refresh() {
         guard CLI.path != nil else {
-            header.title = "screenlight CLI not found"
+            header.title = "screenlight CLI not found — run screenlight install"
             for entry in [follow, warm, off] { entry.isEnabled = false }
             item.button?.image = discIcon(fill: 0)
             return
         }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fresh = CLI.status()
+            DispatchQueue.main.async { self?.apply(fresh) }
+        }
+    }
 
-        status = CLI.status()
-        guard let status = status else {
+    private func apply(_ fresh: Status?) {
+        status = fresh
+        guard let status = fresh else {
             header.title = "Cannot read screenlight"
+            for entry in [follow, warm, off] { entry.isEnabled = false }
             item.button?.image = discIcon(fill: 0)
             return
         }
@@ -193,15 +210,21 @@ final class ScreenLightApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return min(max((day - kelvin) / (day - night), 0), 1)
     }
 
-    @objc private func tapFollow() { CLI.run(["auto"]); refresh() }
-
-    @objc private func tapWarm() {
-        let night = Int((status?.night ?? 2700).rounded())
-        CLI.run(["set", String(night)])
-        refresh()
+    private func ask(_ arguments: [String]) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            CLI.run(arguments)
+            let fresh = CLI.status()
+            DispatchQueue.main.async { self?.apply(fresh) }
+        }
     }
 
-    @objc private func tapOff() { CLI.run(["off", "--for", "60"]); refresh() }
+    @objc private func tapFollow() { ask(["auto"]) }
+
+    @objc private func tapWarm() {
+        ask(["set", String(Int((status?.night ?? 2700).rounded()))])
+    }
+
+    @objc private func tapOff() { ask(["off", "--for", "60"]) }
 }
 
 let application = NSApplication.shared
