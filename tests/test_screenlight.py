@@ -8,6 +8,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -99,6 +100,94 @@ class SunTimes(unittest.TestCase):
         # come back None rather than raising out of acos.
         self.assertIsNone(sl.sun_times(datetime(2026, 6, 21, tzinfo=UTC), 78.2, 15.6))
         self.assertIsNone(sl.sun_times(datetime(2026, 12, 21, tzinfo=UTC), 78.2, 15.6))
+
+
+class Moon(unittest.TestCase):
+    # Published times, for a check against reality rather than against the
+    # implementation. A new moon must land near phase 0, a full near 0.5.
+    EVENTS = (
+        ("new", datetime(2024, 1, 11, 11, 57, tzinfo=UTC), 0.0),
+        ("full", datetime(2024, 1, 25, 17, 54, tzinfo=UTC), 0.5),
+        ("new", datetime(2024, 4, 8, 18, 21, tzinfo=UTC), 0.0),
+        ("full", datetime(2024, 9, 18, 2, 34, tzinfo=UTC), 0.5),
+        ("new", datetime(2025, 3, 29, 10, 58, tzinfo=UTC), 0.0),
+        ("full", datetime(2025, 12, 4, 23, 14, tzinfo=UTC), 0.5),
+    )
+
+    def test_phases_match_published_times(self):
+        for kind, when, expected in self.EVENTS:
+            with self.subTest(kind=kind, when=when):
+                phase = sl.moon_phase(when)
+                off = min(abs(phase - expected), abs(phase - expected - 1),
+                          abs(phase - expected + 1)) * sl.SYNODIC_MONTH
+                # The mean synodic month ignores the orbit's eccentricity, so
+                # half a day of slack is the honest tolerance. On an 18-pixel
+                # glyph that is not a visible difference.
+                self.assertLess(off, 0.5, f"{off:.2f} days out")
+
+    def test_phase_stays_in_range(self):
+        when = datetime(2026, 1, 1, tzinfo=UTC)
+        for _ in range(400):
+            phase = sl.moon_phase(when)
+            self.assertGreaterEqual(phase, 0.0)
+            self.assertLess(phase, 1.0)
+            when += timedelta(days=1)
+
+    def test_a_full_cycle_takes_a_synodic_month(self):
+        start = datetime(2026, 3, 1, tzinfo=UTC)
+        later = start + timedelta(days=sl.SYNODIC_MONTH)
+        self.assertAlmostEqual(sl.moon_phase(start), sl.moon_phase(later), places=6)
+
+    def test_illumination_at_the_quarters(self):
+        self.assertAlmostEqual(sl.moon_illumination(0.0), 0.0)
+        self.assertAlmostEqual(sl.moon_illumination(0.25), 0.5)
+        self.assertAlmostEqual(sl.moon_illumination(0.5), 1.0)
+        self.assertAlmostEqual(sl.moon_illumination(0.75), 0.5)
+
+    def test_the_drawn_shape_has_the_right_area(self):
+        """The terminator the icon draws must enclose the lit fraction.
+
+        The menu bar app builds the lit region from a semicircular limb and a
+        half-ellipse terminator whose half-width is cos(2*pi*phase). There is
+        no Swift compiler here, so the same rule is restated and its area
+        measured: if the sign convention were wrong, a crescent would come out
+        gibbous and this would catch it.
+        """
+        def is_lit(x, y, phase):
+            waxing = phase < 0.5
+            half_width = math.cos(2 * math.pi * phase) * (1 if waxing else -1)
+            edge = half_width * math.sqrt(max(0.0, 1 - y * y))
+            return x >= edge if waxing else x <= edge
+
+        steps = 180
+        for eighth in range(8):
+            phase = eighth / 8
+            with self.subTest(phase=phase):
+                inside = lit = 0
+                for i in range(steps):
+                    for j in range(steps):
+                        x = (i + 0.5) / steps * 2 - 1
+                        y = (j + 0.5) / steps * 2 - 1
+                        if x * x + y * y <= 1:
+                            inside += 1
+                            if is_lit(x, y, phase):
+                                lit += 1
+                self.assertAlmostEqual(lit / inside, sl.moon_illumination(phase),
+                                       places=2)
+
+    def test_crescents_fall_on_the_correct_limb(self):
+        # Waxing lights the right limb, waning the left. Getting this backwards
+        # draws a moon nobody in the northern hemisphere has ever seen.
+        def is_lit(x, y, phase):
+            waxing = phase < 0.5
+            half_width = math.cos(2 * math.pi * phase) * (1 if waxing else -1)
+            edge = half_width * math.sqrt(max(0.0, 1 - y * y))
+            return x >= edge if waxing else x <= edge
+
+        self.assertTrue(is_lit(0.9, 0.0, 0.125))    # waxing crescent, right
+        self.assertFalse(is_lit(-0.9, 0.0, 0.125))
+        self.assertTrue(is_lit(-0.9, 0.0, 0.875))   # waning crescent, left
+        self.assertFalse(is_lit(0.9, 0.0, 0.875))
 
 
 class Schedule(unittest.TestCase):

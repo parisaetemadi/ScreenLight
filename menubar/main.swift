@@ -20,6 +20,7 @@ struct Status: Decodable {
     let day: Double
     let night: Double
     let progress: Double    // 0 at full day, 1 at full night
+    let moon: Double        // 0 new, 0.25 first quarter, 0.5 full
 }
 
 enum CLI {
@@ -62,32 +63,46 @@ enum CLI {
 
 // MARK: - The mark
 
-/// The half-light disc, filled from the bottom as the screen warms.
+/// Tonight's moon, at the phase it actually is.
 ///
 /// A template image: one colour plus transparency, which the system inverts
-/// for the dark menu bar. Drawn rather than shipped as a file so there are no
-/// assets to keep in step with it.
-func discIcon(fill: Double) -> NSImage {
+/// for the dark menu bar. Drawn rather than shipped as a file, which is the
+/// only way a mark that changes every night could work at all.
+func moonIcon(phase: Double) -> NSImage {
     let side: CGFloat = 18
     let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
         let ring = rect.insetBy(dx: 1.75, dy: 1.75)
+        // The moon sits inside the ring with a gap, so a full moon reads as a
+        // disc within a circle rather than as one solid blob.
+        let well = ring.insetBy(dx: 1.9, dy: 1.9)
+        let r = well.width / 2
+        let cx = well.midX, cy = well.midY
 
-        // The fill sits in a smaller circle inside the ring, not against it.
-        // Filling the ring itself meant that at full warmth - which is every
-        // evening, the state you see most - the mark became a solid black
-        // blob, indistinguishable from a dot and from a rendering fault. The
-        // gap keeps it reading as a ring with a core however full it gets.
-        let well = ring.insetBy(dx: 2.3, dy: 2.3)
-        if fill > 0.001 {
-            NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(ovalIn: well).addClip()
-            NSColor.black.setFill()
-            NSBezierPath(rect: NSRect(x: rect.minX,
-                                      y: well.minY,
-                                      width: rect.width,
-                                      height: well.height * CGFloat(fill))).fill()
-            NSGraphicsContext.restoreGraphicsState()
-        }
+        let waxing = phase < 0.5
+        // Half-width of the terminator, signed. Positive curves into the lit
+        // limb, giving a crescent; negative bulges past centre, giving a
+        // gibbous. At new it equals the radius and the lit area vanishes; at
+        // full it is the radius the other way and the disc fills.
+        let t = CGFloat(cos(2 * Double.pi * phase)) * (waxing ? 1 : -1) * r
+
+        let lit = NSBezierPath()
+        // The limb: whichever semicircle faces the sun, top to bottom.
+        lit.appendArc(withCenter: NSPoint(x: cx, y: cy), radius: r,
+                      startAngle: 90, endAngle: waxing ? -90 : 270,
+                      clockwise: waxing)
+        // The terminator, back up to the top: half an ellipse as two quarter
+        // Beziers. 0.5523 is the usual circle-to-cubic constant.
+        let k: CGFloat = 0.5522847498
+        lit.curve(to: NSPoint(x: cx + t, y: cy),
+                  controlPoint1: NSPoint(x: cx + k * t, y: cy - r),
+                  controlPoint2: NSPoint(x: cx + t, y: cy - k * r))
+        lit.curve(to: NSPoint(x: cx, y: cy + r),
+                  controlPoint1: NSPoint(x: cx + t, y: cy + k * r),
+                  controlPoint2: NSPoint(x: cx + k * t, y: cy + r))
+        lit.close()
+
+        NSColor.black.setFill()
+        lit.fill()
 
         let disc = NSBezierPath(ovalIn: ring)
         disc.lineWidth = 1.6
@@ -97,13 +112,6 @@ func discIcon(fill: Double) -> NSImage {
     }
     image.isTemplate = true
     return image
-}
-
-/// Five steps for the whole evening. A mark that redraws on every daemon tick
-/// would twitch in the corner of your eye, and the menu bar is meant to be
-/// ignorable.
-func coarse(_ progress: Double) -> Double {
-    (min(max(progress, 0), 1) * 4).rounded() / 4
 }
 
 // MARK: - The app
@@ -120,7 +128,7 @@ final class ScreenLightApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ note: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = discIcon(fill: 0)
+        item.button?.image = moonIcon(phase: 0.5)
 
         header.isEnabled = false
         for entry in [follow, warm, off] { entry.target = self }
@@ -163,7 +171,7 @@ final class ScreenLightApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard CLI.path != nil else {
             header.title = "screenlight CLI not found — run screenlight install"
             for entry in [follow, warm, off] { entry.isEnabled = false }
-            item.button?.image = discIcon(fill: 0)
+            item.button?.image = moonIcon(phase: 0.5)
             return
         }
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -177,7 +185,7 @@ final class ScreenLightApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let status = fresh else {
             header.title = "Cannot read screenlight"
             for entry in [follow, warm, off] { entry.isEnabled = false }
-            item.button?.image = discIcon(fill: 0)
+            item.button?.image = moonIcon(phase: 0.5)
             return
         }
 
@@ -203,19 +211,11 @@ final class ScreenLightApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         warm.state = (status.source == "manual" && kelvin <= Int(status.night.rounded())) ? .on : .off
         warm.title = "Warm now (\(Int(status.night.rounded()))K)"
 
-        // A manual hold shows whatever is held; otherwise the mark tracks the
-        // schedule, which is the thing worth knowing at a glance.
-        let fill = status.source == "manual"
-            ? warmth(of: status.kelvin, day: status.day, night: status.night)
-            : status.progress
-        item.button?.image = discIcon(fill: coarse(fill))
-    }
-
-    /// Where a held temperature sits between the day and night targets, so a
-    /// hand-set 2000K still reads as "warm" on the mark.
-    private func warmth(of kelvin: Double, day: Double, night: Double) -> Double {
-        guard day != night else { return 0 }
-        return min(max((day - kelvin) / (day - night), 0), 1)
+        // The mark is the moon, not a gauge. What the screen is doing is in
+        // the header a click away; what the sky is doing cannot be read off
+        // anything else, and it is the better thing to carry in a bar you are
+        // meant to ignore.
+        item.button?.image = moonIcon(phase: status.moon)
     }
 
     private func ask(_ arguments: [String]) {

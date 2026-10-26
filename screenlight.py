@@ -267,6 +267,30 @@ def sun_times(day: datetime, lat: float, lon: float):
 
 
 # --------------------------------------------------------------------------
+# where the moon is
+# --------------------------------------------------------------------------
+
+SYNODIC_MONTH = 29.530588853
+NEW_MOON_EPOCH_JD = 2451550.1  # a new moon, 2000-01-06
+
+
+def moon_phase(dt_utc: datetime) -> float:
+    """Position in the lunar cycle: 0 new, 0.25 first quarter, 0.5 full.
+
+    The mean synodic month, which runs about a third of a day out at worst
+    against published times. That is invisible on an eighteen-pixel glyph and
+    it gets there without an ephemeris.
+    """
+    age = (_julian_day(dt_utc) - NEW_MOON_EPOCH_JD) % SYNODIC_MONTH
+    return age / SYNODIC_MONTH
+
+
+def moon_illumination(phase: float) -> float:
+    """Fraction of the disc lit: 0 at new, 1 at full."""
+    return (1.0 - math.cos(2.0 * math.pi * phase)) / 2.0
+
+
+# --------------------------------------------------------------------------
 # the schedule
 # --------------------------------------------------------------------------
 
@@ -687,6 +711,8 @@ def status_report(cfg: dict) -> dict:
         "night": cfg["night"],
         "hold_until": (ov or {}).get("until"),
         "progress": 0.0,
+        "moon": round(moon_phase(now), 4),
+        "moon_lit": round(moon_illumination(moon_phase(now)), 3),
         "sunrise": None,
         "sunset": None,
         "elevation": None,

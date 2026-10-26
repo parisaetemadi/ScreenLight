@@ -54,12 +54,16 @@ bundle on Apple Silicon, reporting `-10825`, which names nothing to do with
 the cause) and registers it as a login agent, so it appears straight away and
 comes back at every login. `screenlight uninstall` removes both agents.
 
-A ringed disc sits in the status bar and **fills from the bottom as the
-evening comes on** — empty at 6500K, full at your night target, in five coarse
-steps. f.lux's icon never changes, so its menu bar tells you nothing; this one
-answers "is it warming yet?" without opening anything. The steps are coarse
-deliberately: a mark that redrew on every daemon tick would twitch in the
-corner of your eye, and the menu bar is meant to be ignorable.
+**The icon is tonight's moon, at the phase it actually is** — a crescent on
+the right while it waxes, on the left while it wanes, a bare ring at new, a
+full disc at full. f.lux's icon never changes; this one is different every
+night and matches what is outside.
+
+It replaced a gauge that filled as the screen warmed. The gauge was worse for
+two reasons: at full warmth it became a solid black blob, which is the state
+you see every evening, and what the screen is doing is already one click away
+in the menu. What the sky is doing is not written anywhere else, and a mark
+you are meant to ignore may as well be worth glancing at.
 
 The menu holds three things and a quit:
 
@@ -69,11 +73,21 @@ The menu holds three things and a quit:
 | **Warm now** | jump straight to the night target |
 | **Off for an hour** | neutral, then back on schedule by itself |
 
-The fill sits in a smaller circle *inside* the ring rather than against it.
-Filling the ring itself made the mark a solid black blob at full warmth —
-which is every evening, the state you see most — indistinguishable from a dot
-or from a rendering fault. The gap keeps it reading as a ring with a core
-however full it gets.
+The moon sits inside the ring with a gap, so even a full moon reads as a disc
+within a circle rather than one solid shape.
+
+The phase comes from the mean synodic month, which runs about a third of a day
+out against published times at worst — invisible at eighteen pixels, and it
+needs no ephemeris. The lit region is a semicircular limb closed by a
+half-elliptical terminator whose width is `cos(2π × phase)`: at new that
+equals the radius and the lit area vanishes, at full it is the radius the
+other way and the disc fills.
+
+There is no Swift compiler in the environment this was written in, so that
+geometry is checked from the Python side instead — the same rule restated, its
+area measured by sampling, and compared against the illumination formula. A
+sign error would draw a crescent as a gibbous, or put it on the wrong limb,
+and the tests would catch both.
 
 It is a template image, so macOS inverts it for the dark menu bar on its own,
 and it is drawn in code rather than shipped as a file — there is no asset to
@@ -221,8 +235,9 @@ screenlight config --lat 43.65 --lon -79.38
 python3 -m unittest discover -s tests -v
 ```
 
-Sixty tests, no dependencies, run against Python 3.11 and 3.13. They cover the parts with a right answer:
-the colour temperature curve, the preset names, the solar position maths, the
+Sixty-six tests, no dependencies, run against Python 3.11 and 3.13. They cover the parts with a right answer:
+the colour temperature curve, the preset names, the solar and lunar position
+maths, the
 schedule, the chart, the config and override files, and the JSON contract the
 menu bar app decodes — that last one checked against the real `.swift` source,
 because a key that changes type there does not crash the app, it just quietly
