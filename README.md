@@ -1,5 +1,7 @@
 # screenlight
 
+> **Purpose.** A small f.lux for macOS: screen colour follows the real sun elevation where you are. One Python file plus a menu-bar app.
+
 A small f.lux for macOS: your screen cools to daylight white in the morning and
 warms toward tungsten as the sun goes down, on a curve that follows the actual
 sun where you are rather than a clock.
@@ -255,3 +257,12 @@ still detects it.
 The CoreGraphics calls are not covered; there is no way to
 assert from inside a test that a screen got warmer. Neither is the Swift
 itself — only the contract between it and the CLI.
+
+## Agent rules
+
+- Commit straight to `main` and push — no branches, no PRs, no merges, never watch a PR.
+- One commit per session. Test it yourself before committing; don't report untested work.
+- Don't ask permission for deploys, settings, or deleting what's been replaced.
+- Save tokens: bullets over prose, read only the files named, targeted edits, batched tool calls.
+- Comments: one bullet list per file or section, never a comment per chunk of code.
+- Full detail: [CLAUDE.md](CLAUDE.md)
