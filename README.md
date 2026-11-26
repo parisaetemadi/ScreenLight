@@ -1,6 +1,6 @@
 # screenlight
 
-> **Purpose.** A small f.lux for macOS: screen colour follows the real sun elevation where you are. One Python file plus a menu-bar app.
+> **Purpose.** A small f.lux for macOS. The screen warms as the sun sets, on a curve driven by the sun's real elevation where you are.
 
 A small f.lux for macOS: your screen cools to daylight white in the morning and
 warms toward tungsten as the sun goes down, on a curve that follows the actual
