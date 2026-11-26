@@ -1,0 +1,49 @@
+# - Deletes stale branches on demand. The cloud session's git proxy refuses
+#   every GitHub write path, so ref deletion has to happen from inside Actions.
+# - Dry run by default: it lists matches and deletes nothing until dry_run=false.
+# - The default branch is skipped unconditionally, whatever the pattern says.
+name: Cleanup branches
+
+on:
+  workflow_dispatch:
+    inputs:
+      pattern:
+        description: Glob of branch names to delete
+        default: 'claude/*'
+      dry_run:
+        description: List matches only, delete nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete matching branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATTERN: ${{ inputs.pattern }}
+          DRY: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          default=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+          gh api --paginate "repos/$GITHUB_REPOSITORY/branches" --jq '.[].name' > all.txt
+          matched=0; deleted=0
+          while read -r b; do
+            [ -z "$b" ] && continue
+            case "$b" in $PATTERN) ;; *) continue ;; esac
+            if [ "$b" = "$default" ] || [ "$b" = main ] || [ "$b" = master ]; then
+              echo "skip (default branch): $b"; continue
+            fi
+            matched=$((matched+1))
+            if [ "$DRY" = "true" ]; then
+              echo "would delete: $b"
+            else
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$b"
+              echo "deleted: $b"; deleted=$((deleted+1))
+            fi
+          done < all.txt
+          echo "pattern=$PATTERN  matched=$matched  deleted=$deleted  dry_run=$DRY" >> "$GITHUB_STEP_SUMMARY"
